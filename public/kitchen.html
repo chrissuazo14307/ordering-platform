@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kitchen Display</title>
+<link rel="stylesheet" href="/styles.css">
+<style>
+  body { background: #121110; color: #f2efe9; }
+  .topbar { background: #1c1a18; border-color: #2e2a26; }
+  .topbar .sub { color: #a39d93; }
+  .board { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; padding: 1rem; align-items: start; }
+  .ticket { background: #fffdf7; color: #1d1b18; border-radius: 10px; overflow: hidden; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+  .ticket.fresh { animation: pop .3s; }
+  @keyframes pop { from { transform: scale(.95); opacity: 0; } }
+  .ticket header { padding: .7rem .9rem; display: flex; justify-content: space-between; align-items: baseline; color: #fff; }
+  .ticket.confirmed header { background: #1d4ed8; }
+  .ticket.preparing header { background: #c2410c; }
+  .ticket.late header { background: #b91c1c; }
+  .ticket header b { font-size: 1.25rem; }
+  .ticket .meta { padding: .5rem .9rem; font-size: .9rem; border-bottom: 1px dashed #d6cfc2; display: flex; justify-content: space-between; }
+  .ticket ul { list-style: none; margin: 0; padding: .4rem .9rem; }
+  .ticket li { font-size: 1.15rem; padding: .3rem 0; border-bottom: 1px solid #eee7da; display: flex; gap: .6rem; }
+  .ticket li .q { font-weight: 800; min-width: 2.2rem; }
+  .ticket .notes { margin: .4rem .9rem; padding: .5rem .6rem; background: #fef3c7; border-left: 4px solid #b45309; font-weight: 600; }
+  .ticket .actions { display: flex; gap: .5rem; padding: .7rem .9rem .9rem; }
+  .ticket .actions .btn { flex: 1; padding: .8rem; font-size: 1rem; }
+  .counts { display: flex; gap: 1rem; font-weight: 700; }
+  .live { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #6b665e; margin-right: .4rem; }
+  .live.on { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+  .empty { color: #a39d93; font-size: 1.2rem; padding: 4rem 1rem; grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div><h1><span class="live" id="live"></span>Kitchen Display</h1><div class="sub">New confirmed orders appear here instantly. Tap <b>Done</b> to send to the central system for invoicing.</div></div>
+  <div class="counts"><span id="cNew">0 new</span><span id="cCooking">0 cooking</span><span id="clock"></span></div>
+</header>
+<main class="board" id="board"><div class="empty">Loading…</div></main>
+
+<script src="/common.js"></script>
+<script>
+const LATE_MIN = 15;
+let orders = new Map();
+const seen = new Set();
+
+async function load() {
+  await APP.loadConfig();
+  const list = await APP.api('/api/staff/orders?status=confirmed,preparing');
+  orders = new Map(list.map((o) => [o.id, o]));
+  render();
+}
+
+function render() {
+  const list = [...orders.values()].sort((a, b) => a.id - b.id); // oldest first
+  document.getElementById('cNew').textContent = list.filter((o) => o.status === 'confirmed').length + ' new';
+  document.getElementById('cCooking').textContent = list.filter((o) => o.status === 'preparing').length + ' cooking';
+  document.getElementById('board').innerHTML = list.length ? list.map((o) => {
+    const mins = APP.minutesSince(o.confirmed_at || o.created_at);
+    return `
+    <article class="ticket ${o.status} ${mins >= LATE_MIN ? 'late' : ''} ${seen.has(o.id) ? '' : 'fresh'}">
+      <header><b>${APP.esc(o.order_no)}</b><span>${mins} min</span></header>
+      <div class="meta"><span><b>${o.order_type === 'dine-in' ? 'TABLE ' + APP.esc(o.table_no) : 'TAKEOUT'}</b> · ${APP.esc(o.customer_name)}</span><span>${APP.time(o.confirmed_at)}</span></div>
+      <ul>${o.items.map((i) => `<li><span class="q">${i.qty}×</span><span>${APP.esc(i.name)}</span></li>`).join('')}</ul>
+      ${o.notes ? `<div class="notes">⚠ ${APP.esc(o.notes)}</div>` : ''}
+      <div class="actions">
+        ${o.status === 'confirmed' ? `<button class="btn warn" data-act="prepare" data-id="${o.id}">Start cooking</button>` : ''}
+        <button class="btn ok" data-act="ready" data-id="${o.id}">Done ✓</button>
+      </div>
+    </article>`;
+  }).join('') : '<div class="empty">No open orders. New orders will pop up here.</div>';
+  list.forEach((o) => seen.add(o.id));
+}
+
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-act]'); if (!b) return;
+  b.disabled = true;
+  try {
+    const o = await APP.api(`/api/staff/orders/${b.dataset.id}/${b.dataset.act}`, { method: 'POST' });
+    applyUpdate(o);
+    if (b.dataset.act === 'ready') APP.toast(`${o.order_no} sent to central system (${o.invoice?.invoice_no})`);
+  } catch (err) { APP.toast(err.message, 'error'); b.disabled = false; }
+});
+
+function applyUpdate(o) {
+  const isNew = !orders.has(o.id) && o.status === 'confirmed';
+  if (['confirmed', 'preparing'].includes(o.status)) orders.set(o.id, o); else orders.delete(o.id);
+  render();
+  if (isNew) APP.beep();
+}
+
+function connect() {
+  const es = new EventSource('/api/staff/events');
+  const live = document.getElementById('live');
+  es.onopen = () => { live.classList.add('on'); load(); }; // resync after reconnect
+  es.onerror = () => live.classList.remove('on');
+  ['order', 'invoiced'].forEach((t) => es.addEventListener(t, (ev) => applyUpdate(JSON.parse(ev.data))));
+}
+
+setInterval(() => { document.getElementById('clock').textContent = new Date().toLocaleTimeString(); render(); }, 30000);
+document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+// Browsers need one interaction before sound can play
+document.body.addEventListener('click', () => APP.beep && (APP._ctx ||= new AudioContext()), { once: true });
+connect();
+</script>
+</body>
+</html>

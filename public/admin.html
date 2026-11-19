@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Central System</title>
+<link rel="stylesheet" href="/styles.css">
+<style>
+  .wrap { max-width: 1250px; margin: 0 auto; padding: 1.25rem; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: .8rem; margin-bottom: 1rem; }
+  .tile .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  .tile .val { font-size: 1.5rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .tabs { display: flex; gap: .4rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .tabs button.on { background: var(--brand); color: var(--brand-ink); border-color: transparent; }
+  .tab { display: none; } .tab.on { display: block; }
+  .tbl-wrap { overflow-x: auto; }
+  tr.flash { animation: flash 2s; }
+  @keyframes flash { from { background: #fde68a; } }
+  .live { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #9ca3af; margin-right: .4rem; }
+  .live.on { background: #22c55e; }
+  .actions { display: flex; gap: .3rem; flex-wrap: wrap; }
+  .switch { display: flex; align-items: center; gap: .4rem; font-size: .9rem; cursor: pointer; }
+  .switch input { width: auto; }
+  .timeline { list-style: none; padding: 0; margin: .5rem 0 0; font-size: .88rem; }
+  .timeline li { padding: .25rem 0; border-left: 2px solid var(--line); padding-left: .7rem; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div><h1><span class="live" id="live"></span>Central System</h1><div class="sub">Invoicing · Record tracking · POS printing</div></div>
+  <div class="row">
+    <label class="switch" title="Automatically open the POS receipt print dialog when the kitchen finishes an order">
+      <input type="checkbox" id="autoPrint"> Auto-print receipts</label>
+    <a class="btn sm" href="/kitchen" target="_blank">Kitchen ↗</a>
+    <a class="btn sm" href="/" target="_blank">Menu ↗</a>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="tiles" id="tiles"></div>
+  <div class="tabs">
+    <button class="btn sm on" data-tab="invoices">To bill <span id="nBill"></span></button>
+    <button class="btn sm" data-tab="active">In progress <span id="nActive"></span></button>
+    <button class="btn sm" data-tab="records">Records</button>
+    <button class="btn sm" data-tab="menu">Menu</button>
+  </div>
+
+  <!-- Invoiced orders waiting for payment / print / close -->
+  <section class="tab on card" id="tab-invoices"><div class="tbl-wrap"><table>
+    <thead><tr><th>Invoice</th><th>Order</th><th>Customer</th><th>Issued</th><th class="num">Total</th><th>Payment</th><th>Printed</th><th></th></tr></thead>
+    <tbody id="billBody"></tbody></table></div></section>
+
+  <!-- Orders pending / with kitchen -->
+  <section class="tab card" id="tab-active"><div class="tbl-wrap"><table>
+    <thead><tr><th>Order</th><th>Customer</th><th>Items</th><th>Status</th><th>Placed</th><th class="num">Total</th><th></th></tr></thead>
+    <tbody id="activeBody"></tbody></table></div></section>
+
+  <!-- Full history -->
+  <section class="tab card" id="tab-records">
+    <div class="spread" style="margin-bottom:.6rem;flex-wrap:wrap">
+      <div class="row"><input type="date" id="recDate" style="width:auto"><button class="btn sm" id="recAll">All dates</button></div>
+      <a class="btn sm" href="/api/staff/export.csv">Export invoices (CSV)</a>
+    </div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Order</th><th>Invoice</th><th>Customer</th><th>Status</th><th>Placed</th><th class="num">Total</th><th>Payment</th><th></th></tr></thead>
+      <tbody id="recBody"></tbody></table></div>
+  </section>
+
+  <!-- Menu management -->
+  <section class="tab card" id="tab-menu">
+    <div class="spread" style="margin-bottom:.6rem"><h2 style="margin:0">Menu items</h2><button class="btn primary sm" id="addItem">+ Add item</button></div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Name</th><th>Category</th><th class="num">Price</th><th>Available</th><th></th></tr></thead>
+      <tbody id="menuBody"></tbody></table></div>
+  </section>
+</div>
+
+<dialog id="dlg"><div class="dlg-body" id="dlgBody"></div></dialog>
+
+<script src="/common.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+const today = () => new Date().toISOString().slice(0, 10);
+let menuItems = [];
+
+$('#autoPrint').checked = localStorage.getItem('autoPrint') === '1';
+$('#autoPrint').onchange = (e) => localStorage.setItem('autoPrint', e.target.checked ? '1' : '0');
+
+document.querySelectorAll('.tabs button').forEach((b) => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.id === 'tab-' + b.dataset.tab));
+  if (b.dataset.tab === 'records') loadRecords();
+  if (b.dataset.tab === 'menu') loadMenu();
+});
+
+const pill = (s) => `<span class="pill ${s}">${APP.esc(APP.statusLabel[s] || s)}</span>`;
+const payPill = (inv) => inv ? `<span class="pill ${inv.payment_status}">${inv.payment_status}${inv.payment_method ? ' · ' + APP.esc(inv.payment_method) : ''}</span>` : '<span class="muted">—</span>';
+
+async function loadSummary() {
+  const s = await APP.api('/api/staff/summary?date=' + today());
+  $('#tiles').innerHTML = [
+    ['Invoices today', s.invoices], ['Gross sales', APP.money(s.gross_cents)], ['Collected', APP.money(s.paid_cents)],
+    ['Outstanding', APP.money(s.unpaid_cents)], ['Tax', APP.money(s.tax_cents)],
+  ].map(([l, v]) => `<div class="card tile"><div class="label">${l}</div><div class="val">${v}</div></div>`).join('');
+}
+
+async function loadBoards(flashId) {
+  const [bill, active] = await Promise.all([
+    APP.api('/api/staff/orders?status=ready'),
+    APP.api('/api/staff/orders?status=pending,confirmed,preparing'),
+  ]);
+  $('#nBill').textContent = bill.length ? `(${bill.length})` : '';
+  $('#nActive').textContent = active.length ? `(${active.length})` : '';
+  $('#billBody').innerHTML = bill.map((o) => `
+    <tr class="${o.id === flashId ? 'flash' : ''}">
+      <td><b>${APP.esc(o.invoice.invoice_no)}</b></td><td>${APP.esc(o.order_no)}</td>
+      <td>${APP.esc(o.customer_name)}<div class="muted">${o.order_type === 'dine-in' ? 'Table ' + APP.esc(o.table_no) : 'Takeout'}</div></td>
+      <td>${APP.time(o.invoice.issued_at)}</td><td class="num"><b>${APP.money(o.total_cents)}</b></td>
+      <td>${payPill(o.invoice)}</td><td>${o.invoice.print_count ? '✓ ×' + o.invoice.print_count : '<span class="muted">No</span>'}</td>
+      <td><div class="actions">
+        <button class="btn sm primary" data-print="${o.id}">🖨 Print POS</button>
+        ${o.invoice.payment_status === 'unpaid' ? `<button class="btn sm" data-pay="${o.id}">Take payment</button>` : `<button class="btn sm ok" data-close="${o.id}">Complete</button>`}
+        <button class="btn sm" data-view="${o.id}">Details</button>
+      </div></td>
+    </tr>`).join('') || '<tr><td colspan="8" class="empty">Nothing to bill. Orders arrive here when the kitchen marks them done.</td></tr>';
+  $('#activeBody').innerHTML = active.map((o) => `
+    <tr class="${o.id === flashId ? 'flash' : ''}">
+      <td><b>${APP.esc(o.order_no)}</b></td><td>${APP.esc(o.customer_name)}</td>
+      <td>${o.items.map((i) => `${i.qty}× ${APP.esc(i.name)}`).join('<br>')}</td>
+      <td>${pill(o.status)}</td><td>${APP.time(o.created_at)}</td><td class="num">${APP.money(o.total_cents)}</td>
+      <td><div class="actions"><button class="btn sm" data-view="${o.id}">Details</button>
+        <button class="btn sm danger" data-cancel="${o.id}">Cancel</button></div></td>
+    </tr>`).join('') || '<tr><td colspan="7" class="empty">No orders in progress.</td></tr>';
+}
+
+async function loadRecords() {
+  const d = $('#recDate').value;
+  const list = await APP.api('/api/staff/orders' + (d ? '?date=' + d : ''));
+  $('#recBody').innerHTML = list.map((o) => `
+    <tr><td><b>${APP.esc(o.order_no)}</b></td><td>${o.invoice ? APP.esc(o.invoice.invoice_no) : '<span class="muted">—</span>'}</td>
+      <td>${APP.esc(o.customer_name)}</td><td>${pill(o.status)}</td><td>${APP.dateTime(o.created_at)}</td>
+      <td class="num">${APP.money(o.total_cents)}</td><td>${payPill(o.invoice)}</td>
+      <td><div class="actions"><button class="btn sm" data-view="${o.id}">Details</button>
+        ${o.invoice ? `<button class="btn sm" data-print="${o.id}">🖨 Reprint</button>` : ''}</div></td></tr>`).join('')
+    || '<tr><td colspan="8" class="empty">No records for this date.</td></tr>';
+}
+$('#recDate').value = today();
+$('#recDate').onchange = loadRecords;
+$('#recAll').onclick = () => { $('#recDate').value = ''; loadRecords(); };
+
+async function loadMenu() {
+  menuItems = await APP.api('/api/staff/menu');
+  $('#menuBody').innerHTML = menuItems.map((m) => `
+    <tr><td><b>${APP.esc(m.name)}</b><div class="muted">${APP.esc(m.description)}</div></td><td>${APP.esc(m.category)}</td>
+      <td class="num">${APP.money(m.price_cents)}</td>
+      <td><label class="switch"><input type="checkbox" data-avail="${m.id}" ${m.available ? 'checked' : ''}> ${m.available ? 'On menu' : 'Hidden'}</label></td>
+      <td><button class="btn sm" data-edit="${m.id}">Edit</button></td></tr>`).join('');
+}
+
+function openPrint(id, auto = true) {
+  window.open(`/receipt/${id}${auto ? '?auto=1' : ''}`, 'receipt_' + id, 'width=420,height=700');
+}
+
+function editItem(m = {}) {
+  $('#dlgBody').innerHTML = `
+    <h2>${m.id ? 'Edit' : 'Add'} menu item</h2>
+    <form id="itemForm">
+      <label>Name</label><input name="name" required value="${APP.esc(m.name || '')}">
+      <label>Description</label><input name="description" value="${APP.esc(m.description || '')}">
+      <div class="grid2">
+        <div><label>Category</label><input name="category" required list="catList" value="${APP.esc(m.category || '')}">
+          <datalist id="catList">${[...new Set(menuItems.map((x) => x.category))].map((c) => `<option value="${APP.esc(c)}">`).join('')}</datalist></div>
+        <div><label>Price</label><input name="price" type="number" step="0.01" min="0" required value="${m.price_cents != null ? (m.price_cents / 100).toFixed(2) : ''}"></div>
+      </div>
+      <div class="row" style="margin-top:1rem;justify-content:flex-end"><button type="button" class="btn" id="dlgCancel">Cancel</button><button class="btn primary">Save</button></div>
+    </form>`;
+  $('#dlg').showModal();
+  $('#dlgCancel').onclick = () => $('#dlg').close();
+  $('#itemForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const body = Object.fromEntries(new FormData(e.target)); body.available = m.id ? m.available : true;
+    try {
+      await APP.api('/api/staff/menu' + (m.id ? '/' + m.id : ''), { method: m.id ? 'PUT' : 'POST', body });
+      $('#dlg').close(); loadMenu(); APP.toast('Menu saved');
+    } catch (err) { APP.toast(err.message, 'error'); }
+  };
+}
+
+async function viewOrder(id) {
+  const o = await APP.api('/api/staff/orders/' + id);
+  $('#dlgBody').innerHTML = `
+    <div class="spread"><h2 style="margin:0">${APP.esc(o.order_no)}</h2>${pill(o.status)}</div>
+    <p class="muted">${APP.esc(o.customer_name)} · ${o.order_type === 'dine-in' ? 'Table ' + APP.esc(o.table_no) : 'Takeout'}${o.invoice ? ' · ' + APP.esc(o.invoice.invoice_no) : ''}</p>
+    <table>${o.items.map((i) => `<tr><td>${i.qty}×</td><td>${APP.esc(i.name)}</td><td class="num">${APP.money(i.line_total_cents)}</td></tr>`).join('')}
+      <tr><td></td><td>Subtotal</td><td class="num">${APP.money(o.subtotal_cents)}</td></tr>
+      <tr><td></td><td>Tax</td><td class="num">${APP.money(o.tax_cents)}</td></tr>
+      <tr><td></td><th>Total</th><th class="num">${APP.money(o.total_cents)}</th></tr></table>
+    ${o.notes ? `<p><b>Notes:</b> ${APP.esc(o.notes)}</p>` : ''}
+    <h3 style="margin-top:1rem">Record trail</h3>
+    <ul class="timeline">${o.events.map((e) => `<li><b>${APP.esc(e.event)}</b> ${e.detail ? '· ' + APP.esc(e.detail) : ''}<div class="muted">${APP.dateTime(e.at)}</div></li>`).join('')}</ul>
+    <div class="row" style="margin-top:1rem;justify-content:flex-end"><button class="btn" id="dlgClose">Close</button></div>`;
+  $('#dlg').showModal();
+  $('#dlgClose').onclick = () => $('#dlg').close();
+}
+
+function takePayment(id) {
+  $('#dlgBody').innerHTML = `<h2>Take payment</h2><p class="muted">Select how the customer paid.</p>
+    <div class="grid2">${['cash', 'card', 'e-wallet', 'other'].map((m) => `<button class="btn lg" data-method="${m}">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}</div>
+    <div class="row" style="margin-top:1rem;justify-content:flex-end"><button class="btn" id="dlgClose">Cancel</button></div>`;
+  $('#dlg').showModal();
+  $('#dlgClose').onclick = () => $('#dlg').close();
+  $('#dlgBody').querySelectorAll('[data-method]').forEach((b) => b.onclick = async () => {
+    try { await APP.api(`/api/staff/orders/${id}/pay`, { method: 'POST', body: { method: b.dataset.method } }); $('#dlg').close(); APP.toast('Payment recorded'); refresh(); }
+    catch (err) { APP.toast(err.message, 'error'); }
+  });
+}
+
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  const d = b.dataset;
+  try {
+    if (d.print) openPrint(d.print);
+    if (d.view) await viewOrder(d.view);
+    if (d.pay) takePayment(d.pay);
+    if (d.close) { await APP.api(`/api/staff/orders/${d.close}/close`, { method: 'POST' }); APP.toast('Order completed'); refresh(); }
+    if (d.cancel && confirm('Cancel this order? The kitchen will be notified.')) {
+      await APP.api(`/api/staff/orders/${d.cancel}/cancel`, { method: 'POST', body: { reason: 'cancelled from central system' } }); refresh();
+    }
+    if (d.edit) editItem(menuItems.find((m) => m.id == d.edit));
+  } catch (err) { APP.toast(err.message, 'error'); }
+});
+$('#addItem').onclick = () => editItem();
+document.addEventListener('change', async (e) => {
+  const id = e.target.dataset.avail; if (!id) return;
+  const m = menuItems.find((x) => x.id == id);
+  try { await APP.api('/api/staff/menu/' + id, { method: 'PUT', body: { ...m, price: m.price_cents / 100, available: e.target.checked } }); loadMenu(); }
+  catch (err) { APP.toast(err.message, 'error'); }
+});
+
+function refresh(flashId) {
+  loadSummary(); loadBoards(flashId);
+  if ($('#tab-records').classList.contains('on')) loadRecords();
+}
+
+function connect() {
+  const es = new EventSource('/api/staff/events');
+  es.onopen = () => { $('#live').classList.add('on'); refresh(); };
+  es.onerror = () => $('#live').classList.remove('on');
+  es.addEventListener('order', (ev) => refresh(JSON.parse(ev.data).id));
+  es.addEventListener('invoiced', (ev) => {
+    const o = JSON.parse(ev.data);
+    APP.beep(); APP.toast(`New invoice ${o.invoice.invoice_no} for ${o.order_no}`);
+    refresh(o.id);
+    if ($('#autoPrint').checked) openPrint(o.id);
+  });
+}
+
+APP.loadConfig().then(connect);
+</script>
+</body>
+</html>

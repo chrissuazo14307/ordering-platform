@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Order Online</title>
+<link rel="stylesheet" href="/styles.css">
+<style>
+  .layout { display: grid; grid-template-columns: 1fr 360px; gap: 1.25rem; max-width: 1200px; margin: 0 auto; padding: 1.25rem; }
+  .cats { display: flex; gap: .5rem; overflow-x: auto; padding-bottom: .5rem; margin-bottom: .75rem; }
+  .cats button { white-space: nowrap; }
+  .cats button.active { background: var(--brand); color: var(--brand-ink); border-color: transparent; }
+  .cat-title { margin: 1.25rem 0 .6rem; font-size: 1.1rem; }
+  .menu-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .8rem; }
+  .item { display: flex; flex-direction: column; gap: .4rem; }
+  .item h3 { font-size: 1rem; margin: 0; }
+  .item p { margin: 0; color: var(--muted); font-size: .88rem; flex: 1; }
+  .item .price { font-weight: 700; }
+  .cart { position: sticky; top: 76px; align-self: start; max-height: calc(100vh - 96px); overflow: auto; }
+  .cart-line { display: grid; grid-template-columns: 1fr auto auto; gap: .5rem; align-items: center; padding: .45rem 0; border-bottom: 1px dashed var(--line); }
+  .qty { display: flex; align-items: center; gap: .3rem; }
+  .qty button { width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
+  .totals div { display: flex; justify-content: space-between; padding: .15rem 0; }
+  .totals .grand { font-weight: 800; font-size: 1.1rem; border-top: 1px solid var(--line); margin-top: .3rem; padding-top: .4rem; }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; padding: .5rem; background: var(--surface); cursor: pointer; font-weight: 600; }
+  .seg button.on { background: var(--brand); color: var(--brand-ink); }
+  .mobile-cart-btn { display: none; }
+  .steps { display: flex; gap: .4rem; margin: 1rem 0; flex-wrap: wrap; }
+  .steps span { padding: .35rem .7rem; border-radius: 999px; background: var(--line); font-size: .8rem; font-weight: 600; color: var(--muted); }
+  .steps span.done { background: var(--ok); color: #fff; }
+  .steps span.now { background: var(--brand); color: var(--brand-ink); }
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; padding: 1rem; }
+    .cart { position: fixed; inset: auto 0 0 0; top: auto; max-height: 85vh; border-radius: 16px 16px 0 0; transform: translateY(100%); transition: transform .25s; z-index: 20; }
+    .cart.open { transform: translateY(0); }
+    .mobile-cart-btn { display: flex; position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 15; }
+    body { padding-bottom: 80px; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div><h1 id="bizName">Menu</h1><div class="sub">Order online. We'll start cooking as soon as you confirm.</div></div>
+</header>
+
+<main class="layout">
+  <section>
+    <div class="cats" id="cats"></div>
+    <div id="menu"><div class="empty">Loading menu…</div></div>
+  </section>
+
+  <aside class="card cart" id="cart">
+    <div class="spread"><h2 style="margin:0">Your order</h2><button class="btn sm mobile-only" id="closeCart" style="display:none">Close</button></div>
+    <div id="cartLines"></div>
+    <div class="totals" id="totals"></div>
+    <div id="checkout">
+      <label>Order type</label>
+      <div class="seg" id="typeSeg"><button data-t="dine-in" class="on">Dine-in</button><button data-t="takeout">Takeout</button></div>
+      <div class="grid2">
+        <div><label for="cname">Name</label><input id="cname" autocomplete="name" maxlength="80"></div>
+        <div id="tableWrap"><label for="table">Table #</label><input id="table" maxlength="20"></div>
+      </div>
+      <label for="notes">Notes for the kitchen (optional)</label>
+      <textarea id="notes" maxlength="500" placeholder="Allergies, no onions, extra spicy…"></textarea>
+      <button class="btn primary block lg" id="placeBtn" style="margin-top:.9rem" disabled>Place order</button>
+    </div>
+  </aside>
+</main>
+<button class="btn primary lg mobile-cart-btn" id="openCart">View order · <span id="mobileTotal">0</span></button>
+
+<!-- Review & confirm -->
+<dialog id="confirmDlg"><div class="dlg-body" id="confirmBody"></div></dialog>
+
+<script src="/common.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+let menu = [], cart = JSON.parse(sessionStorage.getItem('cart') || '{}'), orderType = 'dine-in';
+let current = null; // placed order {id, token, ...}
+
+function saveCart() { sessionStorage.setItem('cart', JSON.stringify(cart)); }
+
+async function init() {
+  const cfg = await APP.loadConfig();
+  $('#bizName').textContent = cfg.name;
+  document.title = cfg.name + ' · Order';
+  menu = await APP.api('/api/menu');
+  // drop cart items that no longer exist
+  for (const id of Object.keys(cart)) if (!menu.find((m) => m.id == id)) delete cart[id];
+  renderMenu(); renderCart();
+  // resume tracking an order from this browser session
+  const saved = JSON.parse(sessionStorage.getItem('order') || 'null');
+  if (saved) track(saved);
+}
+
+function renderMenu() {
+  const cats = [...new Set(menu.map((m) => m.category))];
+  $('#cats').innerHTML = cats.map((c, i) => `<button class="btn sm ${i ? '' : 'active'}" data-c="${APP.esc(c)}">${APP.esc(c)}</button>`).join('');
+  $('#menu').innerHTML = cats.map((c) => `
+    <h2 class="cat-title" id="cat-${APP.esc(c)}">${APP.esc(c)}</h2>
+    <div class="menu-grid">${menu.filter((m) => m.category === c).map((m) => `
+      <div class="card item">
+        <h3>${APP.esc(m.name)}</h3>
+        <p>${APP.esc(m.description)}</p>
+        <div class="spread"><span class="price">${APP.money(m.price_cents)}</span>
+          <button class="btn primary sm" data-add="${m.id}">Add</button></div>
+      </div>`).join('')}</div>`).join('') || '<div class="empty">The menu is empty right now.</div>';
+}
+
+function renderCart() {
+  const lines = Object.entries(cart).map(([id, qty]) => ({ m: menu.find((x) => x.id == id), qty })).filter((l) => l.m);
+  $('#cartLines').innerHTML = lines.length ? lines.map(({ m, qty }) => `
+    <div class="cart-line">
+      <div>${APP.esc(m.name)}<div class="muted" style="font-size:.8rem">${APP.money(m.price_cents)} each</div></div>
+      <div class="qty"><button data-dec="${m.id}" aria-label="Remove one">−</button><b>${qty}</b><button data-inc="${m.id}" aria-label="Add one">+</button></div>
+      <div style="min-width:70px;text-align:right">${APP.money(m.price_cents * qty)}</div>
+    </div>`).join('') : '<div class="empty">Your cart is empty.<br>Add something from the menu.</div>';
+  const sub = lines.reduce((s, l) => s + l.m.price_cents * l.qty, 0);
+  const tax = Math.round(sub * APP.config.taxRate);
+  $('#totals').innerHTML = lines.length ? `
+    <div><span>Subtotal</span><span>${APP.money(sub)}</span></div>
+    <div><span>Tax (${(APP.config.taxRate * 100).toFixed(0)}%)</span><span>${APP.money(tax)}</span></div>
+    <div class="grand"><span>Total</span><span>${APP.money(sub + tax)}</span></div>` : '';
+  $('#placeBtn').disabled = !lines.length;
+  $('#mobileTotal').textContent = `${lines.reduce((s, l) => s + l.qty, 0)} items · ${APP.money(sub + tax)}`;
+}
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('button'); if (!t) return;
+  if (t.dataset.add) { cart[t.dataset.add] = (cart[t.dataset.add] || 0) + 1; saveCart(); renderCart(); APP.toast('Added to order'); }
+  if (t.dataset.inc) { cart[t.dataset.inc]++; saveCart(); renderCart(); }
+  if (t.dataset.dec) { if (--cart[t.dataset.dec] <= 0) delete cart[t.dataset.dec]; saveCart(); renderCart(); }
+  if (t.dataset.c) {
+    document.querySelectorAll('#cats button').forEach((b) => b.classList.toggle('active', b === t));
+    document.getElementById('cat-' + t.dataset.c)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  if (t.dataset.t) {
+    orderType = t.dataset.t;
+    document.querySelectorAll('#typeSeg button').forEach((b) => b.classList.toggle('on', b === t));
+    $('#tableWrap').style.visibility = orderType === 'dine-in' ? 'visible' : 'hidden';
+  }
+});
+$('#openCart').onclick = () => { $('#cart').classList.add('open'); $('#closeCart').style.display = ''; };
+$('#closeCart').onclick = () => $('#cart').classList.remove('open');
+
+// Step 1: place the order (saved as "pending")
+$('#placeBtn').onclick = async () => {
+  $('#placeBtn').disabled = true;
+  try {
+    const order = await APP.api('/api/orders', { method: 'POST', body: {
+      customer_name: $('#cname').value, order_type: orderType, table_no: $('#table').value, notes: $('#notes').value,
+      items: Object.entries(cart).map(([id, qty]) => ({ id: Number(id), qty })),
+    }});
+    current = order;
+    showReview(order);
+  } catch (err) { APP.toast(err.message, 'error'); }
+  $('#placeBtn').disabled = false;
+};
+
+// Step 2: review & confirm -> sent straight to the kitchen
+function showReview(o) {
+  $('#confirmBody').innerHTML = `
+    <h2>Confirm your order</h2>
+    <p class="muted">${APP.esc(o.order_no)} · ${APP.esc(o.customer_name)} · ${o.order_type === 'dine-in' ? 'Table ' + APP.esc(o.table_no) : 'Takeout'}</p>
+    <table>${o.items.map((i) => `<tr><td>${i.qty}×</td><td>${APP.esc(i.name)}</td><td class="num">${APP.money(i.line_total_cents)}</td></tr>`).join('')}
+      <tr><td></td><td>Subtotal</td><td class="num">${APP.money(o.subtotal_cents)}</td></tr>
+      <tr><td></td><td>Tax</td><td class="num">${APP.money(o.tax_cents)}</td></tr>
+      <tr><td></td><th>Total</th><th class="num">${APP.money(o.total_cents)}</th></tr></table>
+    <div class="row" style="margin-top:1rem">
+      <button class="btn danger" id="cancelPending">Cancel</button>
+      <button class="btn primary lg" style="flex:1" id="confirmBtn">Confirm & send to kitchen</button>
+    </div>`;
+  $('#confirmDlg').showModal();
+  $('#cancelPending').onclick = async () => {
+    try { await APP.api(`/api/orders/${o.id}/cancel-pending?t=${o.token}`, { method: 'POST' }); } catch {}
+    $('#confirmDlg').close(); current = null; APP.toast('Order cancelled');
+  };
+  $('#confirmBtn').onclick = async () => {
+    $('#confirmBtn').disabled = true;
+    try {
+      await APP.api(`/api/orders/${o.id}/confirm?t=${o.token}`, { method: 'POST' });
+      cart = {}; saveCart(); renderCart(); $('#notes').value = '';
+      $('#cart').classList.remove('open');
+      sessionStorage.setItem('order', JSON.stringify({ id: o.id, token: o.token }));
+      track({ id: o.id, token: o.token });
+    } catch (err) { APP.toast(err.message, 'error'); $('#confirmBtn').disabled = false; }
+  };
+}
+
+// Step 3: live status for the customer
+let pollTimer;
+async function track({ id, token }) {
+  clearTimeout(pollTimer);
+  let o;
+  try { o = await APP.api(`/api/orders/${id}/track?t=${token}`); } catch { sessionStorage.removeItem('order'); return; }
+  const flow = ['confirmed', 'preparing', 'ready', 'closed'];
+  const idx = flow.indexOf(o.status);
+  const names = { confirmed: 'Received by kitchen', preparing: 'Cooking', ready: 'Ready', closed: 'Completed' };
+  $('#confirmBody').innerHTML = `
+    <h2>${o.status === 'cancelled' ? 'Order cancelled' : 'Thank you, ' + APP.esc(o.customer_name) + '!'}</h2>
+    <p>Your order number is <b style="font-size:1.3rem">${APP.esc(o.order_no)}</b></p>
+    ${o.status === 'cancelled' ? '<p class="muted">Please ask a staff member if you have questions.</p>' :
+      `<div class="steps">${flow.map((s, i) => `<span class="${i < idx ? 'done' : i === idx ? 'now' : ''}">${names[s]}</span>`).join('')}</div>
+       <p class="muted">${o.status === 'ready' ? (o.order_type === 'takeout' ? 'Your order is ready for pickup at the counter.' : 'Your food is on its way to your table.') : 'This page updates automatically.'}</p>`}
+    <div class="totals"><div class="grand"><span>Total</span><span>${APP.money(o.total_cents)}</span></div></div>
+    <button class="btn block" style="margin-top:1rem" id="newOrder">${['closed', 'cancelled'].includes(o.status) ? 'Start a new order' : 'Order more'}</button>`;
+  if (!$('#confirmDlg').open) $('#confirmDlg').showModal();
+  $('#newOrder').onclick = () => {
+    if (['closed', 'cancelled'].includes(o.status)) sessionStorage.removeItem('order');
+    clearTimeout(pollTimer); $('#confirmDlg').close();
+  };
+  if (!['closed', 'cancelled'].includes(o.status)) pollTimer = setTimeout(() => $('#confirmDlg').open && track({ id, token }), 5000);
+}
+
+init().catch((e) => { $('#menu').innerHTML = `<div class="empty">Could not load the menu. ${APP.esc(e.message)}</div>`; });
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "ordering-platform",
+  "version": "1.0.0",
+  "description": "Restaurant ordering platform: menu -> kitchen -> central invoicing -> POS receipt",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning test.js"
+  },
+  "engines": { "node": ">=22.5" },
+  "license": "MIT"
+}
