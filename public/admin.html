@@ -22,6 +22,28 @@
   .switch { display: flex; align-items: center; gap: .4rem; font-size: .9rem; cursor: pointer; }
   .switch input { width: auto; }
   .timeline { list-style: none; padding: 0; margin: .5rem 0 0; font-size: .88rem; }
+  @media (max-width: 640px) {
+    .wrap { padding: .75rem; }
+    .topbar > .row { width: 100%; flex-wrap: wrap; }
+    .topbar > .row .switch { flex: 1 1 100%; }
+    .tiles { grid-template-columns: 1fr 1fr; gap: .5rem; }
+    .tile { padding: .65rem .75rem; }
+    .tile:first-child { grid-column: 1 / -1; }
+    .tile .label { font-size: .7rem; }
+    .tile .val { font-size: 1.15rem; }
+    .tabs { flex-wrap: nowrap; overflow-x: auto; }
+    .tabs button { white-space: nowrap; }
+    section.tab.card { padding: .5rem; background: transparent; border: 0; box-shadow: none; }
+    /* Each table row becomes a card; labels come from the column headers */
+    .tab table thead { display: none; }
+    .tab table, .tab tbody, .tab tr, .tab td { display: block; width: 100%; }
+    .tab tbody tr { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: .4rem .8rem; margin-bottom: .6rem; box-shadow: var(--shadow); }
+    .tab tbody td { border: 0; padding: .3rem 0; text-align: right; overflow: hidden; }
+    .tab tbody td[data-label]::before { content: attr(data-label); float: left; color: var(--muted); font-size: .8rem; padding-right: 1rem; }
+    .tab tbody td:not([data-label]) { text-align: left; padding-top: .5rem; }
+    .tab tbody td .actions .btn { flex: 1; }
+    .tab tbody tr:has(td.empty) { background: transparent; border: 0; box-shadow: none; }
+  }
   .timeline li { padding: .25rem 0; border-left: 2px solid var(--line); padding-left: .7rem; }
 </style>
 </head>
@@ -254,6 +276,17 @@ function connect() {
     if ($('#autoPrint').checked) openPrint(o.id);
   });
 }
+
+// Copy column headers onto cells so phones can show rows as labelled cards
+function labelCells(tbody) {
+  const heads = [...tbody.closest('table').querySelectorAll('thead th')].map((th) => th.textContent.trim());
+  tbody.querySelectorAll('tr').forEach((tr) => [...tr.children].forEach((td, i) => {
+    if (heads[i] && !td.hasAttribute('colspan')) td.dataset.label = heads[i];
+  }));
+}
+document.querySelectorAll('.tab tbody').forEach((tb) => {
+  new MutationObserver(() => labelCells(tb)).observe(tb, { childList: true });
+});
 
 APP.loadConfig().then(connect);
 </script>

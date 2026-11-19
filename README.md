@@ -15,6 +15,15 @@ Customer menu ──place──▶ Review ──confirm──▶ KITCHEN DISPLAY
 | Central system | `/admin` | Cashier / manager: invoices, payments, records, menu |
 | POS receipt | `/receipt/:id` | Opened from the central system and sent to the receipt printer |
 
+## Phones, tablets and computers
+
+Everything runs in the web browser, so there's no app to install. Every screen adapts to phones, tablets and computers.
+
+- **Customer menu**: designed for phones, and also works as a tablet kiosk.
+- **Kitchen display**: best on a tablet in landscape on a stand. Also usable on a phone.
+- **Central system**: works on a computer, tablet or phone. On phones, orders show as cards.
+- **POS printing**: most 80mm thermal printers can't take print jobs from iPads or Android devices. Print from a computer at the counter with the printer attached.
+
 ## How an order flows
 
 1. **Customer** browses the menu, adds items, enters name and table (or picks takeout) and taps **Place order**.
